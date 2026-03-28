@@ -1,8 +1,7 @@
 # CrackNotMe's MCM 6.0 - Project Mayhem — Writeup
 
 **Author:** KarolLoL  
-**Key:** `S4CaqeCret20MCM6` 
-**The crackme:** https://crackmes.one/crackme/69a95101fbfe0ef21de94652
+**Key:** `S4CaqeCret20MCM6`
 ---
 
 ## Overview
@@ -95,3 +94,5 @@ There's also `PwEedPasswordOtsosiPenis` referenced in a separate anti-tampering 
 ## Keygen
 
 See `keygen.py` — reads the packed binary, decrypts the 3-stage payload, extracts the password from the child PE.
+
+**The crackme:** https://crackmes.one/crackme/69a95101fbfe0ef21de94652
