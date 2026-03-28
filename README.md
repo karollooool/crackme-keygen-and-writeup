@@ -10,7 +10,7 @@ The binary is a custom-packed Windows x64 executable. The `start` function is a 
 
 ## Stage 1 — Outer Binary
 
-Entry point at `0x140007C70`. First thing it does is read the first byte from each of the 8 fake sections (`.vmp0`, `.vmp1`, `.themida`, `.enigma1`, `UPX0`, `.aspack`, `.obs0`, `.vbox`) and sums them. These section names are trolling decoys — no commercial protector is used.
+Entry point at `0x140007C70`. First thing it does is read the first byte from each of the 8 fake sections (`.vmp0`, `.vmp1`, `.themida`, `.enigma1`, `UPX0`, `.aspack`, `.obs0`, `.vbox`) and sums them. These section names are trolling decoys. No commercial protector is used.
 
 It then initializes a key value `0x64FA4D94` and runs several checks:
 
