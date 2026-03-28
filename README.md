@@ -1,8 +1,8 @@
 # CrackNotMe's MCM 6.0 - Project Mayhem — Writeup
 
 **Author:** KarolLoL  
-**Password:** `S4CaqeCret20MCM6`
-
+**Key:** `S4CaqeCret20MCM6`
+**The crackme:** https://crackmes.one/crackme/69a95101fbfe0ef21de94652
 ---
 
 ## Overview
