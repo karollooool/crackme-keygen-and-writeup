@@ -1,98 +1,115 @@
-# CrackNotMe's MCM 6.0 - Project Mayhem — Writeup
+# Callfuscated
 
-**Author:** KarolLoL  
-**Key:** `S4CaqeCret20MCM6`
+**HackTheBox Challenge Writeup by KarolLoL**
+
+https://app.hackthebox.com/challenges/Callfuscated
+
 ---
 
-## Overview
+## First Look
 
-The binary is a custom-packed Windows x64 executable. The `start` function is a 2MB control-flow-flattened dispatcher that handles anti-debugging, payload decryption, and reflective PE loading. The actual crackme logic lives inside an encrypted PE embedded in the `.rdata` section.
+When you load the binary in IDA you immediately notice something is off. There are no real call instructions anywhere. Instead, every single function call has been replaced with a push of an address followed by a ret. So instead of `call some_func` you get `push 0x401234; ret`. This is callfuscation, a technique that turns the call graph into a mess and makes static analysis really painful because IDA and Ghidra both struggle to follow the control flow properly.
 
-## Stage 1 — Outer Binary
+The binary also uses a custom VM that interprets bytecode and runs a password check. You enter a 32 character password and the VM grinds through it and either says correct or wrong.
 
-Entry point at `0x140007C70`. First thing it does is read the first byte from each of the 8 fake sections (`.vmp0`, `.vmp1`, `.themida`, `.enigma1`, `UPX0`, `.aspack`, `.obs0`, `.vbox`) and sums them. These section names are trolling decoys. No commercial protector is used.
+## Understanding the Structure
 
-It then initializes a key value `0x64FA4D94` and runs several checks:
+After spending time just getting IDA to cooperate and manually tracing the push/ret chains, the structure started to make sense. The VM reads a bytecode array from the stack, dispatches opcodes, and uses four core functions throughout the computation. I started calling them f3, f5, f7 and f8 based on their addresses.
 
-- **Anti-debug (code scanning):** `sub_1401EFBA0` scans process memory for x86 byte patterns with wildcard masks, looking for debugger breakpoints or patches
-- **Timing check:** Calls `GetTickCount`, sleeps 50ms, calls `GetTickCount` again. If delta < 30ms or > 5000ms, the key gets XOR'd with `0xBAADFACE` / `0xFACEBADD`
-- **Computer name check:** Calls `GetComputerNameA`, if it fails, XOR with `0xDEADFACE`
+The VM also seeds rand() with 1337 at startup. The self modifying part means that rand() output gets written into the bytecode at runtime, so you cannot just statically read all the constants off the bat.
 
-If any check triggers, the key gets corrupted and decryption produces garbage.
+Each group of 4 characters from the input gets accumulated into a 32 bit value and then transformed using two stored constants (I called them K1 and K2). The final result of all 8 groups gets compared to zero. If it is zero, you win.
 
-## Stage 2 — Payload Decryption
+## Identifying the Four Functions
 
-The packed payload sits at `0x1402C7000` (431,616 bytes). The decryption runs in three stages:
+This was the main challenge. The four functions are heavily obfuscated using pointless multiplications by arbitrary constants, xor noise, and dead calculations that get discarded. Just reading the decompiled output does not tell you what they actually compute.
 
-### 2.1 — Byte Transform
+I tried to manually translate the assembly into Python line by line for all four functions. That turned into a complete disaster. The transliterations produced wrong results for every test case I threw at them. The chain extraction approach I tried from the IDA database also produced the wrong answers. Both gave the same broken output, so the issue was in how I extracted the functions, not just the Python translation.
 
-```
-for i in range(SIZE):
-    buf[i] = (buf[i] - (i ^ 0xAB)) & 0xFF
-    buf[i] ^= (0x94 + i * 0x37) & 0xFF
-```
+The approach that actually worked was GDB. I ran the binary inside a Docker container with Ubuntu 22.04 and wrote a GDB Python script that broke at the entry and exit of each function, logged the arguments and return values, and let the binary run with a known test input.
 
-Per-byte subtraction and XOR using index-derived values. `0x94` is the low byte of the key.
+The test input I used was `ABCDEFGHIJKLMNOPQRSTUVWXYZ012345`. I knew what the last group of characters was ("2345" = 0x32333435 as a big endian 32 bit integer), so I could check what the functions did to known values.
 
-### 2.2 — Fisher-Yates Shuffle
+From the GDB trace:
 
-Seeded with the key `0x64FA4D94` using MSVC's `rand()` implementation:
+f5 got called with (0x3233, 256) and returned 0x323300. That is just 0x3233 times 256. So f5 is multiply.
 
-```
-seed = seed * 214013 + 2531011
-return (seed >> 16) & 0x7FFF
-```
+f8 got called with (0x32333435, 0x6c6a524e) and returned 0x5e59667b. XOR of those two inputs gives exactly 0x5e59667b. So f8 is XOR.
 
-Generates a permutation array (indices from N-1 down to 1), then applies the shuffle forward (1 to N-1).
+f3 got called with (0x5e59667b, 0x33333333) and returned 0x2b263348. Subtract the second from the first and you get 0x2b263348. So f3 is subtract.
 
-### 2.3 — 4-Byte XOR
-
-The key is split into LE bytes (`94 4D FA 64`) and XOR'd cyclically across the entire payload:
+For f7 the trace showed the accumulator after processing the four characters "2345" was exactly 0x32333435, which is what you get if you just pack 0x32, 0x33, 0x34, 0x35 as a big endian 32 bit integer. Working backwards through the computation:
 
 ```
-buf[i] ^= key_bytes[i % 4]
+f7(0, 0x32) = 0x32
+f7(0x32 * 256, 0x33) = 0x3233
+f7(0x3233 * 256, 0x34) = 0x323334
+f7(0x323334 * 256, 0x35) = 0x32333435
 ```
 
-Result: a valid PE (MZ header, clean sections, C++ runtime strings).
+This only works if f7 is addition. So f7 is add.
 
-## Stage 3 — HMAC Integrity Check
+So after all that obfuscation the four mystery functions are just add, subtract, multiply, and XOR. The whole point of the obfuscation was to hide four trivial operations.
 
-After decryption, HMAC-SHA256 is computed over the decrypted payload using a 32-byte hardcoded key. The result is compared against a 32-byte expected hash using constant-time XOR accumulation. If it doesn't match, the binary calls `ExitProcess(2)`.
+## The Formula
 
-## Stage 4 — Reflective PE Loading
+Once I had the four operations the VM formula became clear. For each group of 4 characters:
 
-`sub_1401F02B0` maps the decrypted PE into memory:
-- Checks MZ/PE signature
-- Allocates memory via `VirtualAlloc`
-- Copies sections
-- Processes relocations
-- Resolves imports
-- Calls the entry point
+1. Accumulate the characters into a big endian 32 bit integer using repeated multiply by 256 and add
+2. XOR that value with K1[g]
+3. Subtract K2[g]
+4. Add the result to a running total R
 
-## Stage 5 — Child PE
+At the end, if R equals zero the password is correct.
 
-The decrypted PE is a full C++ application with:
-- `ReadConsoleW` / `WriteConsoleW` for I/O
-- Anti-debug taunts (`"MCM v5.0 | :) debugger detected :)"`, `"Your breakpoints are cute"`, `"Nice try, reverser"`)
-- A fake success flag: `"[+] SUCCESS BUT NOT! Flag: MCM6{%08X}"`
-- PEB-walking to find `NTDLL.DLL` by FNV-1a hash
-- `.smc` section (self-modifying code)
+For R to be zero the cleanest solution is for each group contribution to be zero individually. That means for each group:
 
-### Password Validation
+```
+pack_bigendian(chars[g]) XOR K1[g] == K2[g]
+```
 
-At `0x14002BDF0` in the child PE, the user's input is compared against four hardcoded strings using `std::string::compare`:
+Which means:
 
-1. `S4CaqeCret20MCM6` ← **this is the valid password**
-2. `LalkaZalupka` — decoy
-3. `0xCC010558193FUNC1337` — decoy
-4. `MCM56_8571795378165931561` — decoy
+```
+pack_bigendian(chars[g]) == K1[g] XOR K2[g]
+```
 
-Only `S4CaqeCret20MCM6` actually passes all subsequent checks. The others trigger different code paths that eventually fail.
+So the correct 4 character group for each position is just K1[g] XOR K2[g] interpreted as bytes.
 
-There's also `PwEedPasswordOtsosiPenis` referenced in a separate anti-tampering function.
+## Getting the Flag
 
-## Keygen
+I had the K1 and K2 constants from IDA (confirmed they were not modified by rand() at runtime, since the GDB trace showed K1[7] = 0x6c6a524e matching the static value).
 
-See `keygen.py` — reads the packed binary, decrypts the 3-stage payload, extracts the password from the child PE.
+```python
+K1 = [0x0915033a, 0x427d7872, 0x30310a00, 0x2a052e32,
+      0xcff5ecdf, 0x1914031e, 0xf6f7c6ad, 0x6c6a524e]
 
-**The crackme:** https://crackmes.one/crackme/69a95101fbfe0ef21de94652
+K2 = [0x41414141, 0x11111111, 0x55555555, 0x5a5a5a5a,
+      0xaaaaaaaa, 0x77777777, 0x99999999, 0x33333333]
+
+flag = b''
+for g in range(8):
+    v = K1[g] ^ K2[g]
+    flag += bytes([(v >> 24) & 0xff, (v >> 16) & 0xff,
+                   (v >> 8)  & 0xff,  v        & 0xff])
+
+print(flag.decode())
+```
+
+Running that gives `HTB{Sliced_Up_the_Function_4_Ya}`.
+
+Plugging it into the binary in Docker:
+
+```
+echo -n 'HTB{Sliced_Up_the_Function_4_Ya}' | ./crackme
+Welcome to callfuscated crackme.
+To register enter your password: Correct. Validate the challenge using the flag: HTB{Sliced_Up_the_Function_4_Ya}
+```
+
+## What Made This Hard
+
+The callfuscation itself is annoying but manageable once you understand the pattern. The real time sink was the obfuscated arithmetic functions. The decompiler output for each of them is pages of multiplications by large constants, xors of intermediate values, and additions that partially cancel each other out. Manually reading that and figuring out it just computes a-b took a long time.
+
+The Python transliteration approach I started with was a dead end. The assembly to Python conversion had bugs that were very hard to find because the obfuscated form obscures what the "correct" output should even look like. Switching to GDB and just measuring the actual function behavior with known inputs was the move that unlocked everything.
+
+The flag itself is a reference to the challenge. "Sliced Up the Function" describes callfuscation pretty well. Every function got sliced up with push/ret pairs.
