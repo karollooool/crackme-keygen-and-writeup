@@ -1,6 +1,6 @@
 # Callfuscated
 
-**HackTheBox Challenge Writeup by KarolLoL**
+**HackTheBox Insane Challenge Writeup by KarolLoL**
 
 https://app.hackthebox.com/challenges/Callfuscated
 
